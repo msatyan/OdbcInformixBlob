@@ -1,4 +1,4 @@
-# Sample Asymmetric Encryption
+# ODBC sample for accessing Informix dynamic server smart large objects
 Copyright (c) 2016 Sathyanesh Krishnan. All rights reserved.
 
 Licensed under the Apache License, Version 2.0;
