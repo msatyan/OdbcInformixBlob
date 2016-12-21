@@ -88,7 +88,6 @@ int main( int argc, char *argv[] )
         if( sizeof (int *) == 8 )
         {
             MyLocalConnStr = "DRIVER={IBM INFORMIX ODBC DRIVER (64-bit)};SERVER=ids5;DATABASE=db1;HOST=x.x.x.x;PROTOCOL=onsoctcp;SERVICE=5555;UID=user1;PWD=xyz;";
-			MyLocalConnStr = "DRIVER={IBM INFORMIX ODBC DRIVER (64-bit)};SERVER=ids0;DATABASE=db1;HOST=blue;PROTOCOL=onsoctcp;SERVICE=9088;UID=informix;PWD=Blue4You;";
         }
 
         //MyLocalConnStr="DSN=ids0db1";
