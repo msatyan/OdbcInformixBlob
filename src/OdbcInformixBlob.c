@@ -88,6 +88,7 @@ int main( int argc, char *argv[] )
         if( sizeof (int *) == 8 )
         {
             MyLocalConnStr = "DRIVER={IBM INFORMIX ODBC DRIVER (64-bit)};SERVER=ids5;DATABASE=db1;HOST=x.x.x.x;PROTOCOL=onsoctcp;SERVICE=5555;UID=user1;PWD=xyz;";
+			MyLocalConnStr = "DRIVER={IBM INFORMIX ODBC DRIVER (64-bit)};SERVER=ids0;DATABASE=db1;HOST=blue;PROTOCOL=onsoctcp;SERVICE=9088;UID=informix;PWD=Blue4You;";
         }
 
         //MyLocalConnStr="DSN=ids0db1";
@@ -703,368 +704,378 @@ Exit:
 
 
 
-
-int LoBlobInsert_File( SQLHENV henv, SQLCHAR *ConnStr, char *FileName )
+int LoBlobInsert_File(SQLHENV henv, SQLCHAR *ConnStr, char *FileName)
 {
-    int             ErrorLevel=0;
-    SQLHDBC         hdbc=NULL; 
-    SQLHSTMT        hstmt=NULL;
-    SQLRETURN       rc=0;
-
-    void            *pLoSpec=NULL;
-    void            *pLoPtr=NULL;
-    SQLSMALLINT     siLoSpecSize=0;
-    SQLSMALLINT     siLoptrSize=0;
-    SQLLEN          LoFD=0;
-
-
-    printf( "\n\n\nInserting Smart Large Object");
-    rc = SQLAllocHandle( SQL_HANDLE_DBC, henv, &hdbc );
-    GetDiagRec ( rc, SQL_HANDLE_ENV, henv, "SQLAllocHandle");
-
-    if( (rc = SQLDriverConnect( hdbc, NULL, ConnStr, 
-        SQL_NTS, NULL, 0, NULL, SQL_DRIVER_NOPROMPT )) != SQL_SUCCESS)
-    {
-        GetDiagRec ( rc, SQL_HANDLE_DBC, hdbc, "SQLDriverConnect");
-        ++ErrorLevel;
-        goto Exit;
-    }
-
-    rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
-    if ( rc <= SQL_ERROR )
-    {
-        GetDiagRec ( rc, SQL_HANDLE_DBC, hdbc, "SQLAllocHandle:SQL_HANDLE_STMT");
-        ++ErrorLevel;
-        goto Exit;
-    }
-
-    rc = SQLExecDirect(hstmt, "DROP TABLE tab1;", SQL_NTS);
-    rc = SQLExecDirect(hstmt, "CREATE TABLE tab1(id INT, c2 BLOB)", SQL_NTS);
-    if ( rc <= SQL_ERROR )
-    {
-        GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "CREATE TABLE"  );
-        ++ErrorLevel;
-        goto Exit;
-    }
-
-
-    rc = SQLGetInfo (hdbc, SQL_INFX_LO_SPEC_LENGTH, &siLoSpecSize,   sizeof(siLoSpecSize), NULL);
-    ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_DBC, hdbc, "CREATE TABLE"  );
-
-
-    // STEP 1: creates a smart-large-object specification structure
-    if ( !ErrorLevel )
-    {
-        // creates a smart-large-object specification structure and initializes the fields to null values.
-        // If you do not change these values, the null values tell the database server to use 
-        // the system-specified defaults for the storage characteristics of the smart large object.
-        SQLLEN          cbLoDef = 0;
-
-        pLoSpec = malloc (siLoSpecSize);
-        memset( pLoSpec, 0, siLoSpecSize);
-
-        // Parameter-1 Smart-large-object specification structure
-        rc = SQLBindParameter (hstmt, 1, SQL_PARAM_INPUT_OUTPUT, 
-            SQL_C_BINARY, SQL_INFX_UDT_FIXED,  (SQLULEN)siLoSpecSize, 0,
-            pLoSpec, (SQLLEN)siLoSpecSize, &cbLoDef);
-
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 1 -- SQLBindParameter-P1"  );
-
-        rc = SQLExecDirect (hstmt, "{call ifx_lo_def_create_spec(?)}", SQL_NTS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 1 -- SQLExecDirect ifx_lo_def_create_spec"  );
-
-        rc = SQLFreeStmt (hstmt, SQL_RESET_PARAMS);
-    }
-
-
-    // STEP 2: Initialise the smart large object specification structure 
-    if ( !ErrorLevel )
-    {
-        SQLLEN          cbColumnName   = SQL_NTS;
-        SQLLEN          cbLoSpec       = siLoSpecSize;
-
-        // Parameter-1: Pointer to a buffer that contains the name of a database column 
-        // eg : database@server_name:table.column 
-        // owner name also can be included if it is ANSI database. 
-        // eg: database@server_name:owner.table.column 
-        rc = SQLBindParameter (hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_CHAR,
-                sizeof(szColumnName), 0, szColumnName, sizeof(szColumnName), &cbColumnName);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLBindParameter-P1"  );
-
-        // Parameter-2: smart-large-object specification structure
-        rc = SQLBindParameter (hstmt, 2, SQL_PARAM_INPUT_OUTPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED, 
-                (SQLULEN)siLoSpecSize, 0, pLoSpec, (SQLLEN)siLoSpecSize, &cbLoSpec);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLBindParameter-P2"  );
-
-        // Call SP to updates a smart-large-object specification structure with column-level storage characteristics
-        rc = SQLExecDirect (hstmt, (SQLCHAR *) "{call ifx_lo_col_info(?, ?)}", SQL_NTS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLExecDirect ifx_lo_col_info"  );
-
-        rc = SQLFreeStmt (hstmt, SQL_RESET_PARAMS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLFreeStmt" );
-    }
-
-    // STEP 3:  
-    // Get the size of the smart large object structure pointer
-    // Create and Open a new smart large object. 
-    if ( !ErrorLevel )
-    {
-        SQLINTEGER      AccessMode      = LO_RDWR;
-        SQLLEN          cbAccessMode    = 0; 
-        SQLLEN          cbLoPtr         = 0;
-        SQLLEN          cbLoSpec        = siLoSpecSize;
-        SQLLEN          cbLoFD          = 0;
-
-
-        // Get the size of the smart large object pointer structure
-        rc = SQLGetInfo (hdbc, SQL_INFX_LO_PTR_LENGTH, &siLoptrSize, sizeof(siLoptrSize), NULL);
-        cbLoPtr = siLoptrSize;
-
-        pLoPtr = malloc (siLoptrSize);
-        memset( pLoPtr, 0, siLoptrSize);
-
-        ////// Creates and Opens a new smart large object //////
-
-        // Parameter-1: Smart-large-object specification structure that 
-        // contains storage characteristics for the new smart large object
-        rc = SQLBindParameter (hstmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
-                               (SQLULEN)siLoSpecSize, 0, pLoSpec, (SQLLEN)siLoSpecSize, &cbLoSpec);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P1"  );
-
-
-        // Parameter-2: Mode in which to open the new smart large object. For more information, 
-        // Access Modes are LO_RDONLY, LO_DIRTY_READ, LO_WRONLY, LO_APPEND, LO_RDWR, LO_BUFFER, LO_NOBUFFER 
-        rc = SQLBindParameter (hstmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                               (SQLULEN)0, 0, &AccessMode, sizeof(AccessMode), &cbAccessMode);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P2"  );
-
-
-        // Parameter-3: Smart-large-object pointer structure
-        rc = SQLBindParameter (hstmt, 3, SQL_PARAM_INPUT_OUTPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
-                               (SQLULEN)siLoptrSize, 0, 
-                               pLoPtr, siLoptrSize, &cbLoPtr);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P3"  );
-
-
-        // Parameter-4: Smart-large-object file descriptor. 
-        // This file descriptor is only valid within the current database connection.
-        rc = SQLBindParameter (hstmt, 4, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER,
-                               (SQLULEN)0, 0, &LoFD, sizeof(LoFD), &cbLoFD);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P4"  );
-
-
-        // creates and opens a new smart large object and 
-        // Returns a file descriptor that identifies the smart large object
-        rc = SQLExecDirect (hstmt, (SQLCHAR *) "{call ifx_lo_create(?, ?, ?, ?)}", SQL_NTS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- ifx_lo_create"  );
-
-        rc = SQLFreeStmt (hstmt, SQL_RESET_PARAMS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLFreeStmt"  );
-    }
-
-
-
-    //////////////////////////////
-
-    // STEP 4 : writes data to an open smart large object.
-    if( !ErrorLevel  )
-    {
-        struct stat     statbuf         = {0};
-        SQLLEN          DataToBeWritten = 0;
-        SQLLEN          DataWritten     = 0;
-        SQLLEN          DataBuffSize    = 0;
-        SQLCHAR         *pDataBuff      = NULL;
-        SQLLEN          cbDataBuff      = 0;
-        SQLLEN          cbLoFD          = 0;
-        int             LoopCount       = 0;
-        int             fdData          = 0;
-
-        // Get the size of the file containing data for the new smart large object
-        if (stat( FileName, &statbuf) == -1)
-        {
-            printf ( "Error %d reading %s\n", errno, FileName);
-            ++ErrorLevel;
-        }
-
-        DataToBeWritten = statbuf.st_size;
-        DataBuffSize = (DataToBeWritten < LO_WRITE_BUFF_SIZE ) ? DataToBeWritten : LO_WRITE_BUFF_SIZE;
-
-        // Allocate a buffer to hold the smart large object data
-        pDataBuff = malloc (DataBuffSize + 4);
-        memset( pDataBuff, 0, (DataBuffSize + 4) );
-
-
-        // Read smart large object data from file 
-        fdData = _open ((char *) FileName, O_RDONLY | _O_BINARY);
-        if (fdData == -1)
-        {
-            printf ( "Error %d creating file descriptor for %s\n", errno, FileName);
-            exit(1);
-        }
-
-
-       cbDataBuff = DataBuffSize;
-
-       // Smart-large-object file descriptor
-       rc = SQLBindParameter (hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
-                              0, 0, &LoFD, sizeof(LoFD), &cbLoFD);
-       ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 4 -- SQLBindParameter-P1"  );
-
-
-       // Buffer that contains the data that the function writes to the smart large object. 
-       // The size of the buffer cannot exceed 2 gigabytes.
-       rc = SQLBindParameter (hstmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_CHAR,
-                              DataBuffSize, 0, pDataBuff, DataBuffSize, &cbDataBuff);
-       ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 4 -- SQLBindParameter-P2)"  );
-
-       // Prepare the SP call to writes data.
-       rc = SQLPrepare(hstmt, (SQLCHAR *)"{call ifx_lo_write(?, ?)}", SQL_NTS );
-
-       //////////////////////////////////////////////
-       printf( "\n");
-       printf( "\n Transporting %lld bytes of smart blob data", DataToBeWritten);
-       if( DataToBeWritten > LO_WRITE_BUFF_SIZE )
-       {
-           SQLLEN NumIterations = DataToBeWritten / LO_WRITE_BUFF_SIZE;
-
-           if( DataToBeWritten > (NumIterations*LO_WRITE_BUFF_SIZE) )
-           {
-               ++NumIterations;
-           }
-
-           printf( " in %lld iterations", NumIterations);
-       }
-       printf( ", Please Wait.\n");
-
-       while( DataToBeWritten > 0 )
-       {
-            size_t          ReadDataSize=0;
-
-            ++LoopCount;
-            cbDataBuff = (DataToBeWritten < DataBuffSize ) ? DataToBeWritten : DataBuffSize;
-
-            memset( pDataBuff, 0, DataBuffSize+4);
-            ReadDataSize = _read (fdData, pDataBuff, (unsigned int )cbDataBuff);
-            if (ReadDataSize == 0)
-            {
-                break;
-            }
-            if (ReadDataSize < 0)
-            {
-                printf ( "Error %d reading %s\n", errno, FileName);
-                break;
-            }
-            if ( cbDataBuff != ReadDataSize )
-            {
-                cbDataBuff = ReadDataSize;
-            }
-
-            // Execute ifx_lo_write
-            if ( (rc = SQLExecute( hstmt )) != 0 )
-            {
-                ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 4 -- SQLExecDirect ifx_lo_write"  );
-            }
-            if( ErrorLevel )
-            {
-                break;
-            }
-
-            DataWritten += ReadDataSize;
-            DataToBeWritten -= ReadDataSize;
-
-            if ( LoopCount % 100 == 0 )
-                printf( ".");
-        }
-        printf( "\n Done \n");
-
-        ///////////////////////////
-        if (_close(fdData) < 0)
-        {
-            printf ( "Error %d closing the file %s\n", errno, FileName);
-            ++ErrorLevel;
-        }
-
-
-        // Reset the statement parameters
-        rc = SQLFreeStmt (hstmt, SQL_RESET_PARAMS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLFreeStmt"  );
-
-        printf( "\n Inserted DATA size : %ld byte \n", DataWritten);
-    }
- 
-    // STEP 5: Insert the new smart large object into a row.
-    if( !ErrorLevel  )
-    {
-        SQLLEN      cb_Id   = 0;
-        SQLSMALLINT id_data = 0;
-        SQLLEN      cbLoPtr = 0;
-
-        cbLoPtr = siLoptrSize;
-
-        cb_Id=0;
-        id_data=1;
-        rc= SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SSHORT, SQL_INTEGER, 0, 0, &id_data, 0, &cb_Id);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLBindParameter-P1"  );
-
-        // The new smart large object ptr
-        rc = SQLBindParameter (hstmt, 2, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
-                               (SQLULEN)siLoptrSize, 0, pLoPtr, siLoptrSize, &cbLoPtr);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLBindParameter-P2"  );
-
-        printf("\n Execute %s", InsertStmt );
-        rc = SQLExecDirect (hstmt, InsertStmt, SQL_NTS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLExecDirect INSERT"  );
-
-        rc = SQLFreeStmt (hstmt, SQL_RESET_PARAMS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLFreeStmt"  );
-    }
-
-    //STEP 6.  Close the smart large object
-    if( !ErrorLevel  )
-    {
-        SQLLEN          cbLoFD = 0;
-
-        // Parameter-1: Smart-large-object file descriptor
-        rc = SQLBindParameter (hstmt, 1, SQL_PARAM_INPUT, SQL_C_LONG, SQL_INTEGER,
-                               (SQLULEN)0, 0, &LoFD, sizeof(LoFD), &cbLoFD);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLBindParameter-P1"  );
-
-        rc = SQLExecDirect (hstmt, (SQLCHAR *) "{call ifx_lo_close(?)}", SQL_NTS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLExecDirect ifx_lo_close"  );
-
-        rc = SQLFreeStmt (hstmt, SQL_RESET_PARAMS);
-        ErrorLevel += GetDiagRec ( rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLFreeStmt"  );
-    }
+	int             ErrorLevel = 0;
+	SQLHDBC         hdbc = NULL;
+	SQLHSTMT        hstmt = NULL;
+	SQLRETURN       rc = 0;
+
+	void            *pLoSpec = NULL;
+	void            *pLoPtr = NULL;
+	SQLSMALLINT     siLoSpecSize = 0;
+	SQLSMALLINT     siLoptrSize = 0;
+	SQLLEN          LoFD = 0;
+
+
+	printf("\n\n\nInserting Smart Large Object");
+	rc = SQLAllocHandle(SQL_HANDLE_DBC, henv, &hdbc);
+	GetDiagRec(rc, SQL_HANDLE_ENV, henv, "SQLAllocHandle");
+
+	if ((rc = SQLDriverConnect(hdbc, NULL, ConnStr,
+		SQL_NTS, NULL, 0, NULL, SQL_DRIVER_NOPROMPT)) != SQL_SUCCESS)
+	{
+		GetDiagRec(rc, SQL_HANDLE_DBC, hdbc, "SQLDriverConnect");
+		++ErrorLevel;
+		goto Exit;
+	}
+
+	rc = SQLAllocHandle(SQL_HANDLE_STMT, hdbc, &hstmt);
+	if (rc <= SQL_ERROR)
+	{
+		GetDiagRec(rc, SQL_HANDLE_DBC, hdbc, "SQLAllocHandle:SQL_HANDLE_STMT");
+		++ErrorLevel;
+		goto Exit;
+	}
+
+	rc = SQLExecDirect(hstmt, "DROP TABLE tab1;", SQL_NTS);
+	rc = SQLExecDirect(hstmt, "CREATE TABLE tab1(id INT, c2 BLOB)", SQL_NTS);
+	if (rc <= SQL_ERROR)
+	{
+		GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "CREATE TABLE");
+		++ErrorLevel;
+		goto Exit;
+	}
+
+	// Get the size of a smart large object specification structure
+	rc = SQLGetInfo(hdbc, SQL_INFX_LO_SPEC_LENGTH, &siLoSpecSize, sizeof(siLoSpecSize), NULL);
+	ErrorLevel += GetDiagRec(rc, SQL_HANDLE_DBC, hdbc, "SQLGetInfo:SQL_INFX_LO_SPEC_LENGTH");
+
+
+	// STEP 1: creates a smart-large-object specification structure
+	if (!ErrorLevel)
+	{
+		// creates a smart-large-object specification structure and initializes the fields to null values.
+		// If you do not change these values, the null values tell the database server to use 
+		// the system-specified defaults for the storage characteristics of the smart large object.
+		SQLLEN          cbLoDef = 0;
+
+
+		// allocate memory for smart-large-object specification structure 
+		pLoSpec = malloc(siLoSpecSize);
+		memset(pLoSpec, 0, siLoSpecSize);
+
+		// Parameter-1 Smart-large-object specification structure
+		rc = SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT_OUTPUT,
+			SQL_C_BINARY, SQL_INFX_UDT_FIXED, (SQLULEN)siLoSpecSize, 0,
+			pLoSpec, (SQLLEN)siLoSpecSize, &cbLoDef);
+
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 1 -- SQLBindParameter-P1");
+
+		rc = SQLExecDirect(hstmt, "{call ifx_lo_def_create_spec(?)}", SQL_NTS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 1 -- SQLExecDirect ifx_lo_def_create_spec");
+
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+	}
+
+
+	// STEP 2: Initialise the smart large object specification structure 
+	if (!ErrorLevel)
+	{
+		SQLLEN          cbColumnName = SQL_NTS;
+		SQLLEN          cbLoSpec = siLoSpecSize;
+
+		// Parameter-1: Pointer to a buffer that contains the name of a database column 
+		// eg : database@server_name:table.column 
+		// owner name also can be included if it is ANSI database. 
+		// eg: database@server_name:owner.table.column 
+		//  szColumnName[32] = "tab1.C2";
+		rc = SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_CHAR,
+			sizeof(szColumnName), 0, szColumnName, sizeof(szColumnName), &cbColumnName);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLBindParameter-P1");
+
+		// Parameter-2: smart-large-object specification structure
+		rc = SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT_OUTPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
+			(SQLULEN)siLoSpecSize, 0, pLoSpec, (SQLLEN)siLoSpecSize, &cbLoSpec);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLBindParameter-P2");
+
+		// Call SP to updates a smart-large-object specification structure 
+		// with column-level storage characteristics
+		rc = SQLExecDirect(hstmt, (SQLCHAR *) "{call ifx_lo_col_info(?, ?)}", SQL_NTS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLExecDirect ifx_lo_col_info");
+
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 2 -- SQLFreeStmt");
+	}
+
+	// STEP 3:  
+	// Get the size of the smart large object structure pointer
+	// Create and Open a new smart large object. 
+	if (!ErrorLevel)
+	{
+		SQLINTEGER      AccessMode = LO_RDWR;
+		SQLLEN          cbAccessMode = 0;
+		SQLLEN          cbLoPtr = 0;
+		SQLLEN          cbLoSpec = siLoSpecSize;
+		SQLLEN          cbLoFD = 0;
+
+
+		// Get the size of the smart large object pointer structure
+		rc = SQLGetInfo(hdbc, SQL_INFX_LO_PTR_LENGTH, &siLoptrSize, sizeof(siLoptrSize), NULL);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_DBC, hstmt, "Step 3 -- SQL_INFX_LO_PTR_LENGTH");
+
+		// Allocate memory for SLOB structure
+		pLoPtr = malloc(siLoptrSize);
+		memset(pLoPtr, 0, siLoptrSize);
+
+		////// Creates and Opens a new smart large object //////
+
+		// Parameter-1: Smart-large-object specification structure that 
+		// contains storage characteristics for the new smart large object
+		rc = SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
+			(SQLULEN)siLoSpecSize, 0, pLoSpec, (SQLLEN)siLoSpecSize, &cbLoSpec);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P1");
+
+
+		// Parameter-2: Mode in which to open the new smart large object. For more information, 
+		// Access Modes are LO_RDONLY, LO_DIRTY_READ, LO_WRONLY, LO_APPEND, LO_RDWR, LO_BUFFER, LO_NOBUFFER 
+		// AccessMode = LO_RDWR;
+		rc = SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+			(SQLULEN)0, 0, &AccessMode, sizeof(AccessMode), &cbAccessMode);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P2");
+
+
+		// Parameter-3: Smart-large-object pointer structure
+		cbLoPtr = siLoptrSize;
+		rc = SQLBindParameter(hstmt, 3, SQL_PARAM_INPUT_OUTPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
+			(SQLULEN)siLoptrSize, 0,
+			pLoPtr, siLoptrSize, &cbLoPtr);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P3");
+
+
+		// Parameter-4: Smart-large-object file descriptor. 
+		// This file descriptor is only valid within the current database connection.
+		rc = SQLBindParameter(hstmt, 4, SQL_PARAM_OUTPUT, SQL_C_SLONG, SQL_INTEGER,
+			(SQLULEN)0, 0, &LoFD, sizeof(LoFD), &cbLoFD);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLBindParameter-P4");
+
+
+		// creates and opens a new smart large object and 
+		// Returns a file descriptor that identifies the smart large object
+		rc = SQLExecDirect(hstmt, (SQLCHAR *) "{call ifx_lo_create(?, ?, ?, ?)}", SQL_NTS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- ifx_lo_create");
+
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 3 -- SQLFreeStmt");
+	}
+
+
+
+	//////////////////////////////
+
+	// STEP 4 : writes data to an open smart large object.
+	if (!ErrorLevel)
+	{
+		struct stat     statbuf = { 0 };
+		SQLLEN          DataToBeWritten = 0;
+		SQLLEN          DataWritten = 0;
+		SQLLEN          DataBuffSize = 0;
+		SQLCHAR         *pDataBuff = NULL;
+		SQLLEN          cbDataBuff = 0;
+		SQLLEN          cbLoFD = 0;
+		int             LoopCount = 0;
+		int             fdData = 0;
+
+		// Get the size of the file containing data for the new smart large object
+		if (stat(FileName, &statbuf) == -1)
+		{
+			printf("Error %d reading %s\n", errno, FileName);
+			++ErrorLevel;
+		}
+
+		DataToBeWritten = statbuf.st_size;
+		DataBuffSize = (DataToBeWritten < LO_WRITE_BUFF_SIZE) ? DataToBeWritten : LO_WRITE_BUFF_SIZE;
+
+		// Allocate a buffer to hold the smart large object data
+		pDataBuff = malloc(DataBuffSize + 4);
+		memset(pDataBuff, 0, (DataBuffSize + 4));
+
+		// Smart-large-object file descriptor
+		rc = SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SLONG, SQL_INTEGER,
+			0, 0, &LoFD, sizeof(LoFD), &cbLoFD);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 4 -- SQLBindParameter-P1");
+
+
+		// Buffer that contains the data that the function writes to the smart large object. 
+		// The size of the buffer cannot exceed 2 gigabytes.
+		cbDataBuff = DataBuffSize;
+		rc = SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT, SQL_C_CHAR, SQL_CHAR,
+			DataBuffSize, 0, pDataBuff, DataBuffSize, &cbDataBuff);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 4 -- SQLBindParameter-P2)");
+
+		// Prepare the SP call to writes data.
+		rc = SQLPrepare(hstmt, (SQLCHAR *)"{call ifx_lo_write(?, ?)}", SQL_NTS);
+
+		//////////////////////////////////////////////
+		printf("\n");
+		printf("\n Transporting %lld bytes of smart blob data", DataToBeWritten);
+		if (DataToBeWritten > LO_WRITE_BUFF_SIZE)
+		{
+			SQLLEN NumIterations = DataToBeWritten / LO_WRITE_BUFF_SIZE;
+
+			if (DataToBeWritten > (NumIterations*LO_WRITE_BUFF_SIZE))
+			{
+				++NumIterations;
+			}
+
+			printf(" in %lld iterations", NumIterations);
+		}
+		printf(", Please Wait.\n");
+
+
+		// Open the input data file (of smart large object data from file)
+		fdData = _open((char *)FileName, O_RDONLY | _O_BINARY);
+		if (fdData == -1)
+		{
+			printf("Error %d creating file descriptor for %s\n", errno, FileName);
+			exit(1);
+		}
+
+		/////////////////////////////////////////
+		while (DataToBeWritten > 0)
+		{
+			size_t          ReadDataSize = 0;
+
+			++LoopCount;
+			cbDataBuff = (DataToBeWritten < DataBuffSize) ? DataToBeWritten : DataBuffSize;
+
+			memset(pDataBuff, 0, DataBuffSize + 4);
+			ReadDataSize = _read(fdData, pDataBuff, (unsigned int)cbDataBuff);
+			if (ReadDataSize == 0)
+			{
+				break;
+			}
+			if (ReadDataSize < 0)
+			{
+				printf("Error %d reading %s\n", errno, FileName);
+				break;
+			}
+
+			// cbDataBuff is being bind to the parm 2 for ifx_lo_write
+			if (cbDataBuff != ReadDataSize)
+			{
+				cbDataBuff = ReadDataSize;
+			}
+
+			// Execute ifx_lo_write
+			if ((rc = SQLExecute(hstmt)) != 0)
+			{
+				ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 4 -- SQLExecDirect ifx_lo_write");
+			}
+			if (ErrorLevel)
+			{
+				break;
+			}
+
+			DataWritten += ReadDataSize;
+			DataToBeWritten -= ReadDataSize;
+
+			if (LoopCount % 100 == 0)
+				printf(".");
+		}
+		printf("\n Write to LOB Done \n");
+
+		///////////////////////////
+		if (_close(fdData) < 0)
+		{
+			printf("Error %d closing the file %s\n", errno, FileName);
+			++ErrorLevel;
+		}
+
+
+		// Reset the statement parameters
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLFreeStmt");
+
+		printf("\n Inserted DATA size : %ld byte \n", DataWritten);
+	}
+
+	// STEP 5: Insert the new smart large object into a row.
+	if (!ErrorLevel)
+	{
+		SQLLEN      cb_Id = 0;
+		SQLSMALLINT id_data = 0;
+		SQLLEN      cbLoPtr = 0;
+
+		cbLoPtr = siLoptrSize;
+
+		cb_Id = 0;
+		id_data = 1;
+		rc = SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_SSHORT, SQL_INTEGER, 0, 0, &id_data, 0, &cb_Id);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLBindParameter-P1");
+
+		// The new smart large object ptr
+		// pointer to SLOB structure which is bind to 
+		// parm 3 of ifx_lo_create() at step 3
+		rc = SQLBindParameter(hstmt, 2, SQL_PARAM_INPUT, SQL_C_BINARY, SQL_INFX_UDT_FIXED,
+			(SQLULEN)siLoptrSize, 0, pLoPtr, siLoptrSize, &cbLoPtr);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLBindParameter-P2");
+
+		printf("\n Execute %s", InsertStmt);
+		// InsertStmt = "INSERT INTO tab1(id, c2 ) VALUES(?, ?)";
+		rc = SQLExecDirect(hstmt, InsertStmt, SQL_NTS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLExecDirect INSERT");
+
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 5 -- SQLFreeStmt");
+	}
+
+	//STEP 6.  Close the smart large object
+	if (!ErrorLevel)
+	{
+		SQLLEN          cbLoFD = 0;
+
+		// Parameter-1: Smart-large-object file descriptor
+		rc = SQLBindParameter(hstmt, 1, SQL_PARAM_INPUT, SQL_C_LONG, SQL_INTEGER,
+			(SQLULEN)0, 0, &LoFD, sizeof(LoFD), &cbLoFD);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLBindParameter-P1");
+
+		rc = SQLExecDirect(hstmt, (SQLCHAR *) "{call ifx_lo_close(?)}", SQL_NTS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLExecDirect ifx_lo_close");
+
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+		ErrorLevel += GetDiagRec(rc, SQL_HANDLE_STMT, hstmt, "Step 6 -- SQLFreeStmt");
+	}
 
 
 Exit:
-    if ( hstmt )
-    {
-        rc =SQLFreeStmt(hstmt,SQL_CLOSE);
-        rc = SQLFreeStmt( hstmt, SQL_UNBIND);
-        rc = SQLFreeStmt( hstmt, SQL_RESET_PARAMS);
-        rc = SQLFreeHandle(SQL_HANDLE_STMT,hstmt);
-    }
+	if (hstmt)
+	{
+		rc = SQLFreeStmt(hstmt, SQL_CLOSE);
+		rc = SQLFreeStmt(hstmt, SQL_UNBIND);
+		rc = SQLFreeStmt(hstmt, SQL_RESET_PARAMS);
+		rc = SQLFreeHandle(SQL_HANDLE_STMT, hstmt);
+	}
 
-    if( hdbc )
-    {
-        rc = SQLDisconnect(hdbc);
-        rc = SQLFreeHandle(SQL_HANDLE_DBC,hdbc);
-    }
+	if (hdbc)
+	{
+		rc = SQLDisconnect(hdbc);
+		rc = SQLFreeHandle(SQL_HANDLE_DBC, hdbc);
+	}
 
-    if( pLoSpec )
-    {
-        free( pLoSpec );
-    }
+	if (pLoSpec)
+	{
+		free(pLoSpec);
+	}
 
-    if( pLoPtr )
-    {
-        free( pLoPtr );
-    }
-    
+	if (pLoPtr)
+	{
+		free(pLoPtr);
+	}
 
-    return(rc);
-} 
+
+	return(rc);
+}
 
 
 
